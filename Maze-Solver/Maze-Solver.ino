@@ -1,23 +1,31 @@
-#include "States.h"
+enum state {
+  STOPPED,
+  GOING_FORWARD,
+  RECENTERING,
+  TURNING_BACK,
+  GOAL_REACHED
+};
 //#include "Decisions.h"
 
 // PIN OUT
-const int RIGHT_PIN = D0;
+const int RIGHT_PIN = D2;
 const int CENTER_PIN = D1;
-const int LEFT_PIN = D2;
+const int LEFT_PIN = D0;
 const int LEFT_WHEEL_PIN1 = D3;
 const int LEFT_WHEEL_PIN2 = D4;
 const int RIGHT_WHEEL_PIN1 = D7;
 const int RIGHT_WHEEL_PIN2 = D8;
+const int GREEN_PIN = D5;
+const int BLUE_PIN = D6;
 
 
 // CONSTANTS
-const int GOAL_COUNTER_THRESHOLD = 2;
-const int MOVE_TIME = 150;
+const int GOAL_COUNTER_THRESHOLD = 5;
+const int MOVE_TIME = 50;
 const int CENTER_SEARCH_MOVE_LAPSE = 15;
 const int SEARCH_ITERS = 12;
-const int U_TURN_INITIAL_MOVE_LAPSE = 300;
-
+const int U_TURN_INITIAL_MOVE_LAPSE = 350;
+const int TURN_INIT_LAPSE = 350;
 const int READS_REMEMBERED = 100;
 const int RIGHT_INDEX = 0;
 const int LEFT_INDEX = 1;
@@ -42,7 +50,9 @@ void setup() {
   pinMode(LEFT_WHEEL_PIN1, OUTPUT);
   pinMode(LEFT_WHEEL_PIN2, OUTPUT);
   pinMode(RIGHT_WHEEL_PIN1, OUTPUT);
-  pinMode(RIGHT_WHEEL_PIN2, OUTPUT); 
+  pinMode(RIGHT_WHEEL_PIN2, OUTPUT);
+  pinMode(GREEN_PIN, OUTPUT);
+  pinMode(BLUE_PIN, OUTPUT); 
   Serial.begin(9600);
   delay(3000);
 }
@@ -54,31 +64,25 @@ void setup() {
   }
 }*/
 void loop(){
-  delay(50);
-  update_knowledge();
-  switch(robot_state){
-    case STOPPED: {
-      if(center_present()){
-        go_forward();
-      }else{
-        turn_back();
-      }
-      break;
+  delay(20);
+  turn_both_leds_off();
+  if(robot_state == GOAL_REACHED){
+    victory_dance();
+  }
+  if(center_present()){
+    green_led_on();
+    if(left_present()){
+      blue_led_on();
+      turn_left();
+    }else {
+      go_forward(); 
     }
-    case GOING_FORWARD: {
-      if(!center_present()){
-        stop_motors();
-        robot_state = STOPPED;
-        find_center();
-      }
-      break;
-    }    
-    case GOAL_REACHED: {
-      victory_dance();
-      break;
+  } else{
+    bool recentered = find_center();
+    if (!recentered){
+      turn_back();
     }
-  }//end switch state
-  check_goal(); 
+  }
 } //end loop
 
 void check_goal(){
@@ -86,6 +90,122 @@ void check_goal(){
     robot_state = GOAL_REACHED;
   }
 }
+
+void turn_left(){
+  bool right_was_present = right_present();
+  bool confirmed_left = left_present();
+  if(!confirmed_left){
+    return;
+  }
+  start_right_wheel_forward();
+  delay(TURN_INIT_LAPSE);
+  stop_motors();
+  //delay(2000);
+  bool right_still_present = digitalRead(RIGHT_PIN);
+  if(right_was_present && right_still_present){
+    //return to previous position
+     start_left_wheel_forward();
+     delay(TURN_INIT_LAPSE);
+     stop_motors();
+     robot_state = GOAL_REACHED;
+     return;
+  }
+  bool center = digitalRead(CENTER_PIN);
+  while(!center){
+    start_right_wheel_forward();
+    delay(CENTER_SEARCH_MOVE_LAPSE*3);
+    stop_motors();
+    delay(100);
+    center = digitalRead(CENTER_PIN);
+  }
+}
+
+void go_forward(){
+  //Serial.println("Hacia delante!!!");  
+  start_right_wheel_forward();
+  start_left_wheel_forward();
+  delay(MOVE_TIME);
+  stop_motors();
+}
+
+bool find_center(){
+  Serial.println("Buscando Centro...");
+  int center = digitalRead(CENTER_PIN);
+  
+  for(int i=0; !center && i<SEARCH_ITERS; i+=2){
+    rotate_right(CENTER_SEARCH_MOVE_LAPSE * (i+1));
+    delay(100);
+    center = digitalRead(CENTER_PIN);
+    if(center){
+      break;
+    }      
+    rotate_left(CENTER_SEARCH_MOVE_LAPSE * (i+2));
+    delay(100);
+    center = digitalRead(CENTER_PIN);
+    if(center){
+      break;
+    }
+  }
+  if(center)
+    return true;
+  else{
+    // return to original position
+    rotate_right(CENTER_SEARCH_MOVE_LAPSE * (SEARCH_ITERS));
+    return false;  
+  }
+}
+
+void turn_back(){
+  //robot_state = TURNING_BACK;
+  //take_turn = true;
+  bool strip_found = false;
+  rotate_left(U_TURN_INITIAL_MOVE_LAPSE);
+  while (!strip_found){
+    rotate_left(CENTER_SEARCH_MOVE_LAPSE*2);
+    delay(100);
+    strip_found = digitalRead(CENTER_PIN);
+  } 
+}
+
+void victory_dance(){
+  go_forward_for(MOVE_TIME*5);
+  //rotate_left(500);
+  //rotate_right(500);
+  for(int i=0; i<20; i++){
+    green_led_on();
+    rotate_left(120);
+    green_led_off();
+    blue_led_on();
+    rotate_right(120);
+    blue_led_off(); 
+  }
+  while(true){
+    green_led_on();
+    delay(100000);
+  }
+}
+
+void log_state(int sensor_right, int sensor_center, int sensor_left){
+  unsigned long now = millis();
+  if( now - time_last_log > 1000){
+    Serial.print("Robot State: ");
+    if(robot_state == STOPPED)
+      Serial.print("STOPPED");
+    if(robot_state == GOING_FORWARD){
+      Serial.print("GOING FORWARD");
+    }
+    Serial.println("izquierdo");
+    Serial.println(sensor_right);
+    Serial.println("Centro");
+    Serial.println(sensor_center);
+    Serial.println("Derecho");  
+    Serial.println(sensor_left);
+    time_last_log = now;
+   }
+}
+
+///////////////////////////////////////////
+/////////   Long term MEMORY   ///////////
 
 void update_knowledge(){
   int right = digitalRead(RIGHT_PIN); 
@@ -99,16 +219,13 @@ void update_knowledge(){
     last_reads[last_read_index][CENTER_INDEX] = center;
     last_reads[last_read_index][LEFT_INDEX] = left;
     last_read_index++;
-    if(last_read_index > READS_REMEMBERED -1)
+    if(last_read_index > READS_REMEMBERED -1){
       last_read_index = 0;  
+    }   
   }
-
   if(right && center && left){
     goal_counter++;
-  } else{
-    //goal_counter = 0;
   }
-  
 }
 
 int* get_last_read(){
@@ -118,68 +235,29 @@ int* get_last_read(){
     return last_reads[last_read_index-1];
 }
 
+
+///////////////////////////////////////////
+////////      IR  SENSORS      ///////////
 bool center_present(){
-  int * last_read = get_last_read();
-  return last_read[CENTER_INDEX];
+  return digitalRead(CENTER_PIN);
 }
 
-void go_forward(){
-  robot_state = GOING_FORWARD;
-  //Serial.println("Hacia delante!!!");  
+bool right_present(){
+  return digitalRead(RIGHT_PIN);
+}
+
+bool left_present(){
+  return digitalRead(LEFT_PIN);
+}
+
+///////////////////////////////////////////
+////////     WHEELS / MOTORS    ///////////
+
+void go_forward_for(int time_ms){
   start_right_wheel_forward();
   start_left_wheel_forward();
-  //delay(MOVE_TIME);
-  //stop_motors();
-}
-
-bool find_center(){
-  Serial.println("Buscando Centro...");
-  int center = digitalRead(CENTER_PIN);
-  
-  for(int i=0; !center && i<SEARCH_ITERS; i+=2){
-    rotate_right(CENTER_SEARCH_MOVE_LAPSE * (i+1));
-    delay(100);
-    center = digitalRead(CENTER_PIN);
-    if(center){
-      /*rotate_right(CENTER_SEARCH_MOVE_LAPSE*3); // move again to better re-center
-      delay(100);
-      center = digitalRead(CENTER_PIN);
-      if(!center){
-        //moved too much
-        rotate_left(CENTER_SEARCH_MOVE_LAPSE*2);
-      }*/
-      break;
-    }      
-    rotate_left(CENTER_SEARCH_MOVE_LAPSE * (i+2));
-    delay(100);
-    center = digitalRead(CENTER_PIN);
-    if(center){
-      /*rotate_left(CENTER_SEARCH_MOVE_LAPSE*3); // move again to better re-center
-      delay(100);
-      center = digitalRead(CENTER_PIN);
-      if(!center){
-        //moved too much
-        rotate_right(CENTER_SEARCH_MOVE_LAPSE*2);
-      }*/
-      break;
-    }
-  }
-  if(center)
-    return true;
-  else
-    return false;  
-}
-
-void turn_back(){
-  //robot_state = TURNING_BACK;
-  //take_turn = true;
-  bool strip_found = false;
-  rotate_left(U_TURN_INITIAL_MOVE_LAPSE);
-  while (!strip_found){
-    rotate_left(CENTER_SEARCH_MOVE_LAPSE*2);
-    delay(100);
-    strip_found = digitalRead(CENTER_PIN);
-  } 
+  delay(time_ms);
+  stop_motors();
 }
 
 void rotate_left(int time_ms){
@@ -225,37 +303,6 @@ void stop_motors()
   digitalWrite (RIGHT_WHEEL_PIN2, LOW);
 }
 
-void victory_dance(){
-  rotate_left(500);
-  rotate_right(500);
-  for(int i=0; i<10; i++){
-    rotate_left(100);
-    rotate_right(100); 
-  }
-  while(true){
-    delay(100000);
-  }
-}
-
-void log_state(int sensor_right, int sensor_center, int sensor_left){
-  unsigned long now = millis();
-  if( now - time_last_log > 1000){
-    Serial.print("Robot State: ");
-    if(robot_state == STOPPED)
-      Serial.print("STOPPED");
-    if(robot_state == GOING_FORWARD){
-      Serial.print("GOING FORWARD");
-    }
-    Serial.println("izquierdo");
-    Serial.println(sensor_right);
-    Serial.println("Centro");
-    Serial.println(sensor_center);
-    Serial.println("Derecho");  
-    Serial.println(sensor_left);
-    time_last_log = now;
-   }
-}
-
 void go_backwards(){
   // Right wheel motor
   digitalWrite (LEFT_WHEEL_PIN2, HIGH);
@@ -266,4 +313,32 @@ void go_backwards(){
 
   delay(MOVE_TIME);
   stop_motors();
+}
+///////////////////////////////////////////
+////////         LEDS          ///////////
+
+void green_led_on(){
+  digitalWrite(GREEN_PIN, HIGH);
+}
+
+void green_led_off(){
+  digitalWrite(GREEN_PIN, LOW);
+}
+
+void blue_led_on(){
+  digitalWrite(BLUE_PIN, HIGH);
+}
+
+void blue_led_off(){
+  digitalWrite(BLUE_PIN, LOW);
+}
+
+void turn_both_leds_on(){
+  green_led_on();
+  blue_led_on();
+}
+
+void turn_both_leds_off(){
+  green_led_off();
+  blue_led_off();
 }
