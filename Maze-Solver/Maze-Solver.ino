@@ -23,9 +23,11 @@ const int BLUE_PIN = D6;
 const int GOAL_COUNTER_THRESHOLD = 5;
 const int MOVE_TIME = 50;
 const int CENTER_SEARCH_MOVE_LAPSE = 15;
-const int SEARCH_ITERS = 12;
-const int U_TURN_INITIAL_MOVE_LAPSE = 350;
-const int TURN_INIT_LAPSE = 350;
+const int SEARCH_ITERS = 6;
+const int U_TURN_INITIAL_MOVE_LAPSE = 250;
+const int TURN_INIT_LAPSE = 250;
+const int REFINEMENT_LAPSE = 25;
+const int MAX_REFINEMENT_FACTOR = 5;
 const int READS_REMEMBERED = 100;
 const int RIGHT_INDEX = 0;
 const int LEFT_INDEX = 1;
@@ -54,7 +56,7 @@ void setup() {
   pinMode(GREEN_PIN, OUTPUT);
   pinMode(BLUE_PIN, OUTPUT); 
   Serial.begin(9600);
-  delay(3000);
+  delay(5000);
 }
 
 /*void loop(){
@@ -64,24 +66,29 @@ void setup() {
   }
 }*/
 void loop(){
-  delay(20);
+  delay(30);
   turn_both_leds_off();
   if(robot_state == GOAL_REACHED){
     victory_dance();
   }
-  if(center_present()){
-    green_led_on();
-    if(left_present()){
-      blue_led_on();
-      turn_left();
-    }else {
-      go_forward(); 
-    }
-  } else{
-    bool recentered = find_center();
-    if (!recentered){
-      turn_back();
-    }
+  if(left_present()){
+    //blue_led_on();
+    turn_left();
+  } else {
+    if(center_present()){
+      green_led_on();
+      go_forward();
+    } else{
+      if(right_present()){
+        //blue_led_on();
+        turn_right();
+      } else{ //no left, center nor right
+        bool recentered = find_center();
+        if (!recentered){
+          turn_back();
+        }  
+      }
+    }  
   }
 } //end loop
 
@@ -100,7 +107,7 @@ void turn_left(){
   start_right_wheel_forward();
   delay(TURN_INIT_LAPSE);
   stop_motors();
-  //delay(2000);
+  delay(100);
   bool right_still_present = digitalRead(RIGHT_PIN);
   if(right_was_present && right_still_present){
     //return to previous position
@@ -112,13 +119,43 @@ void turn_left(){
   }
   bool center = digitalRead(CENTER_PIN);
   while(!center){
-    start_right_wheel_forward();
-    delay(CENTER_SEARCH_MOVE_LAPSE*3);
+    rotate_left(CENTER_SEARCH_MOVE_LAPSE*2);
     stop_motors();
     delay(100);
     center = digitalRead(CENTER_PIN);
   }
+  //refine_center(true);
 }
+
+void turn_right(){
+  bool left_was_present = left_present();
+  bool confirmed_right = right_present();
+  if(!confirmed_right){
+    return;
+  }
+  start_left_wheel_forward();
+  delay(TURN_INIT_LAPSE);
+  stop_motors();
+  delay(100);
+  bool left_still_present = digitalRead(LEFT_PIN);
+  if(left_was_present && left_still_present){
+    //return to previous position
+     start_right_wheel_forward();
+     delay(TURN_INIT_LAPSE);
+     stop_motors();
+     robot_state = GOAL_REACHED;
+     return;
+  }
+  bool center = digitalRead(CENTER_PIN);
+  while(!center){
+    rotate_right(CENTER_SEARCH_MOVE_LAPSE*2);
+    stop_motors();
+    delay(100);
+    center = digitalRead(CENTER_PIN);
+  }
+  //refine_center(false);
+}
+
 
 void go_forward(){
   //Serial.println("Hacia delante!!!");  
@@ -131,26 +168,37 @@ void go_forward(){
 bool find_center(){
   Serial.println("Buscando Centro...");
   int center = digitalRead(CENTER_PIN);
-  
+  bool found_from_left = true;
   for(int i=0; !center && i<SEARCH_ITERS; i+=2){
-    rotate_right(CENTER_SEARCH_MOVE_LAPSE * (i+1));
-    delay(100);
-    center = digitalRead(CENTER_PIN);
-    if(center){
-      break;
-    }      
-    rotate_left(CENTER_SEARCH_MOVE_LAPSE * (i+2));
-    delay(100);
-    center = digitalRead(CENTER_PIN);
-    if(center){
-      break;
+    int max_rotation = CENTER_SEARCH_MOVE_LAPSE * (i+1);
+    for(int rotation=CENTER_SEARCH_MOVE_LAPSE; !center && rotation<max_rotation; rotation+=CENTER_SEARCH_MOVE_LAPSE){
+      rotate_right(rotation);
+      delay(60);
+      center = digitalRead(CENTER_PIN);
+      if(center){
+        found_from_left = false;
+        break;
+      }  
+    }
+    if(!center){
+      int max_rotation =  (i < 5)? CENTER_SEARCH_MOVE_LAPSE * (i+2) : CENTER_SEARCH_MOVE_LAPSE * (i+5);  //compensation for difference in response of the motors
+      for(int rotation=CENTER_SEARCH_MOVE_LAPSE; !center && rotation<max_rotation; rotation+=CENTER_SEARCH_MOVE_LAPSE){
+        rotate_left(rotation);
+        delay(60);
+        center = digitalRead(CENTER_PIN);
+        if(center){
+          found_from_left = true;
+          break;
+        }
+      }  
     }
   }
-  if(center)
+  if(center){
+    refine_center(found_from_left);
     return true;
-  else{
+  }else{
     // return to original position
-    rotate_right(CENTER_SEARCH_MOVE_LAPSE * (SEARCH_ITERS));
+    //rotate_right(CENTER_SEARCH_MOVE_LAPSE * (SEARCH_ITERS));
     return false;  
   }
 }
@@ -159,12 +207,45 @@ void turn_back(){
   //robot_state = TURNING_BACK;
   //take_turn = true;
   bool strip_found = false;
-  rotate_left(U_TURN_INITIAL_MOVE_LAPSE);
+  rotate_right(U_TURN_INITIAL_MOVE_LAPSE);
   while (!strip_found){
-    rotate_left(CENTER_SEARCH_MOVE_LAPSE*2);
+    rotate_right(CENTER_SEARCH_MOVE_LAPSE*2);
     delay(100);
     strip_found = digitalRead(CENTER_PIN);
-  } 
+  }
+  refine_center(true); 
+}
+
+void refine_center(bool from_left){
+  int refinement_factor  = 1;
+  if(!center_present()){
+    return;  
+  }
+  blue_led_on();
+  //delay(1000); // TODO remove
+  _refine_center(from_left, REFINEMENT_LAPSE);
+  delay(100);
+  while(!center_present()){
+    _refine_center(!from_left, REFINEMENT_LAPSE/refinement_factor);
+    delay(100);
+    if(center_present())
+      break;
+    refinement_factor++;
+    _refine_center(!from_left, REFINEMENT_LAPSE/refinement_factor);
+    delay(100); 
+    if(refinement_factor > MAX_REFINEMENT_FACTOR){
+      find_center();  
+    }
+  }  
+  blue_led_off();
+}
+
+void _refine_center(bool from_left, int time_ms){
+  if(from_left){
+    rotate_left(time_ms);
+  } else {
+    rotate_right(time_ms);
+  }
 }
 
 void victory_dance(){
